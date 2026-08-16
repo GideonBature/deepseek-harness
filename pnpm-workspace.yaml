@@ -7,6 +7,10 @@ packages:
   - native/landlock-run/packages/*
   # Product assemblies over the package tier; apps/cli owns the `dsh` bin.
   - apps/*
+  # Fork-owned desktop app: apps/desktop holds the Electron shell (see its
+  # PLAN.md); server-deploy is its dependency-only deploy root, materialized
+  # by apps/desktop/scripts/stage-server.mjs.
+  - apps/desktop/server-deploy
   - website
   # The runnable demo leaves join as ONE workspace member: examples/package.json
   # declares the union of every leaf's cordis.yml plugins as workspace:*, so a
@@ -40,6 +44,8 @@ peerDependencyRules:
 allowBuilds:
   esbuild: true
   lefthook: true
+  # Fork-owned desktop app: electron's postinstall downloads the platform binary.
+  electron: true
   # Cross-platform boundary for the persistent PTY backend, including ConPTY on Windows.
   node-pty: true
   # Pulled in by @earendil-works/pi-ai (optional LLM API backend). pnpm lists

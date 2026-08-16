@@ -1,0 +1,20 @@
+{
+  // Standalone fork-owned project: not part of any repository tsconfig
+  // aggregate. The build is esbuild (scripts/build-app.mjs); tsc is the
+  // typecheck only.
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2024"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

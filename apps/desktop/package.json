@@ -1,0 +1,21 @@
+{
+  "name": "dsh-desktop",
+  "description": "Electron desktop shell for the DeepSeek Harness web app (fork-owned; see PLAN.md and README.md)",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "scripts": {
+    "build": "node scripts/build-app.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node scripts/build-app.mjs && electron .",
+    "stage": "node scripts/stage-server.mjs",
+    "smoke": "node scripts/smoke-boot.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "electron": "43.4.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3"
+  }
+}

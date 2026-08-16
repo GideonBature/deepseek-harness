@@ -55,27 +55,32 @@ harness changes that conflict with the sync goal.
 ```
 apps/desktop/                 # fork-owned, new, never touched by upstream
   PLAN.md                     # this file
-  package.json                # private; NOT @deepseek-ai/-scoped (bypasses app-package gates)
-  electron-builder.yml        # or builder config in package.json
-  .gitignore                  # local outputs (build/, out/, dist/)
+  README.md                   # testing and release workflows
+  package.json                # dsh-desktop: private, unscoped (bypasses app-package gates)
+  tsconfig.json               # standalone typecheck project (not in repo aggregates)
+  electron-builder.yml        # phase 2: packaging config
+  .gitignore                  # local outputs (build/, out/, dist/, node_modules/)
   src/
     main/                     # main process: spawn, readiness, windows, lifecycle, menu, tray
-    preload/                  # minimal bridge (shell.openExternal etc.), contextIsolation on
-    shared/                   # port/readiness protocol constants
+    preload/                  # minimal bridge (contextBridge), contextIsolation on
   resources/                  # icons, entitlements (macOS)
   server-deploy/package.json  # deploy root: dependency manifest for the harness closure
   scripts/
-    stage-server.mjs          # pnpm deploy + materialize links + electron-rebuild
-    dev.mjs                   # dev mode: spawn from workspace build, watch
+    build-app.mjs             # esbuild bundle of main (ESM) + preload (CJS)
+    stage-server.mjs          # pnpm deploy + materialize links + closure gate
+    smoke-boot.mjs            # boot proof: readiness line, served app, clean exit
+    gen-server-deploy-manifest.mjs  # regenerate deploy manifest from the CLI closure
   tests/                      # smoke tests: server boot, readiness parse, window load
 ```
 
 Shared-file footprint in the fork (everything else upstream owns and we never edit):
 
-- Zero edits to `pnpm-workspace.yaml` or root `package.json`: `apps/*` is already a workspace glob.
-- One optional fork-local line in `knip.json`: add `"apps/desktop"` to `ignoreWorkspaces` (the
-  established pattern for non-conforming workspaces like `python/sdk-runtime`). This is the only
-  upstream-owned file we touch; a merge conflict here is a one-line fix.
+- `pnpm-workspace.yaml`: one added member line, `apps/desktop/server-deploy` (verified: `pnpm deploy`
+  cannot select a non-member project, so the deploy root must be a workspace member).
+- `knip.json`: `apps/desktop/server-deploy` added to `ignoreWorkspaces` (the established pattern for
+  non-conforming workspaces like `python/sdk-runtime`).
+- These two one-line edits are the only upstream-owned files we touch; a merge conflict there is a
+  one-line fix each.
 - `apps/desktop/package.json` is `"private": true` and uses an unscoped or personal-scoped name
   (e.g. `dsh-desktop`) so `check-workspace-constraints` and the app-package-files policy skip it.
 - New CI workflow `.github/workflows/desktop-release.yml` is additive; name it so it cannot
@@ -95,25 +100,24 @@ Branch model:
 
 1. `pnpm install` after each upstream sync; `pnpm run build` (builds host/client libs + web dist).
 2. `apps/desktop/scripts/stage-server.mjs`:
-   - `pnpm --filter`-less deploy of `apps/desktop/server-deploy` (a dependency-only manifest whose
-     `dependencies` list `@deepseek-ai/dsh` workspace:^, pulling the whole web closure):
-     `pnpm --dir apps/desktop/server-deploy deploy --legacy --prod --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true apps/desktop/build/server`
-     (same flags as the proven exe pipeline; fallback: make `server-deploy` a workspace member).
-   - Materialize remaining symlinks and hoists (port the two helpers from
-     `scripts/build-exe-for-python-sdk.ts`).
-   - `npx @electron/rebuild -p <staging>` against the Electron ABI for `node-pty` and
-     `node-addon-require-builtin`.
-   - Verify offline boot: `ELECTRON_RUN_AS_NODE=1 <electron> build/server/node_modules/@deepseek-ai/dsh/lib/bin.js web --port 0` with a scratch `DSH_HOME`, parse the URL line, curl the origin. This is the phase-0 gate.
-3. `electron-builder` packages `apps/desktop` with `extraResources: build/server` (server closure
-   stays out of the asar; native modules unpacked). Targets: `dmg`+`zip` (macOS, both arches),
-   `nsis` (Windows), `AppImage`+`deb` (Linux).
-4. Signing/notarization: ship unsigned for development; add Apple Developer ID + notarization and
-   Windows code signing as a phase-3 item (credentials in fork repo secrets).
+   - `pnpm --filter dsh-desktop-server-deploy deploy --legacy --prod --config.node-linker=hoisted --config.auto-install-peers=false --config.link-workspace-packages=true <staging>` (same flags as the proven exe pipeline). `apps/desktop/server-deploy` is a workspace member (one added line in `pnpm-workspace.yaml`), and its dependency list is **generated** by `apps/desktop/scripts/gen-server-deploy-manifest.mjs` from the CLI's workspace closure; `scripts/verify-runtime-closure.ts` gates the manifest, so an upstream sync that adds a workspace peer fails the stage with a regenerate hint.
+   - Materializes remaining symlinks and hoists (ported from `scripts/build-exe-for-python-sdk.ts`).
+   - `npx @electron/rebuild -m <staging>` against the Electron ABI (verified: only `node-pty` needs it; `sharp`/`koffi` are N-API and load as-is).
+   - Verified (2026-08-16, Electron 43.4.0, embedded Node 24.18.1): the staged closure boots offline and serves the assembled app under `ELECTRON_RUN_AS_NODE=1` — see §4b.
+3. `electron-builder` packages `apps/desktop` with `extraResources: build/server` (server closure stays out of the asar; native modules unpacked). Targets: `dmg`+`zip` (macOS, both arches), `nsis` (Windows), `AppImage`+`deb` (Linux).
+4. Signing/notarization: ship unsigned for development; add Apple Developer ID + notarization and Windows code signing as a phase-3 item (credentials in fork repo secrets).
 
-Electron version constraint: pick the newest stable Electron whose embedded Node satisfies
-`^22.19.0 || >=24.0.0` (needed by `node:sqlite` and the harness engines). Verify at selection time:
-`ELECTRON_RUN_AS_NODE=1 npx electron -e "console.log(process.versions.node)"`. Pin it in
-`apps/desktop/package.json` and bump only deliberately.
+Electron version constraint: pick the newest stable Electron whose embedded Node satisfies `^22.19.0 || >=24.0.0`. Verified at selection time: Electron 43.4.0 embeds Node 24.18.1 (satisfies the engines). Pin it in `apps/desktop/package.json` and bump only deliberately.
+
+## 4b. Phase-0 verification record (done 2026-08-16)
+
+Verified against a real Electron binary, not just system Node:
+
+- `stage-server.mjs` → `build/server` closure passes the entry checks and the runtime-closure gate (191 workspace packages, closed graph).
+- `smoke-boot.mjs` boots `dsh web --port 0`, parses the `dsh web: http://127.0.0.1:<port>` readiness line, fetches `/`, asserts the injected `window.__DSH_BOOT__` manifest and the app root, then SIGTERMs the server to a clean code-0 exit. PASS under both system Node 26 and Electron 43.4.0 (`ELECTRON_RUN_AS_NODE=1`, embedded Node 24.18.1).
+- **The spawn must pass `--expose-internals`**: the web profile always mounts the client-HMR chain, and the cordis loader's internals fallback (`node-addon-require-builtin`, a Node-API addon) probes Electron's runtime as unsupported, so only the `--expose-internals` branch works under Electron-as-node. Verified: `process.execArgv` carries the flag and the server boots with it.
+- ABI facts: `node-pty` must be rebuilt for Electron (`@electron/rebuild` found and rebuilt it); `sharp` and `koffi` (N-API) load without rebuild under the ad-hoc Electron binary. An Apple-signed Electron (e.g. VS Code's) enforces library validation and rejects the unsigned native modules — that is the hardened-runtime case our notarized builds must sign for (phase 3).
+- Environment note: in this VS Code agent sandbox, `pnpm deploy` needs host filesystem access (the sandbox denies writing package files named `.gitmodules`/`.idea`) and the npm registry for its standalone `@pnpm/exe`; the plain terminal of a developer or CI has neither restriction.
 
 ## 5. Runtime behavior (main process)
 
@@ -132,9 +136,8 @@ Electron version constraint: pick the newest stable Electron whose embedded Node
 
 ## 6. Phased roadmap
 
-- **Phase 0 — sync + proof (days)** Add `upstream` remote; write `apps/desktop/PLAN.md`,
-  `server-deploy` manifest, and `stage-server.mjs`; prove the deployed web profile boots offline
-  and serves the SPA. Gate: the phase-0 curl smoke passes on macOS and Linux.
+- **Phase 0 — sync + proof (done 2026-08-16)** `upstream` remote added and `upstream/master` fetched; `apps/desktop/server-deploy` + generated manifest, `stage-server.mjs`, `smoke-boot.mjs` land; the deployed web profile boots offline and serves the assembled app under system Node and Electron 43.4.0 (see §4b). `pnpm-workspace.yaml` gains the deploy-root member line and `knip.json` the ignore entry.
+- **Phase 1 — dev-mode desktop app (done 2026-08-17)** `dsh-desktop` package: main process spawns the staged server (`ELECTRON_RUN_AS_NODE=1`, `--expose-internals`, `--port 0`), parses readiness, opens a locked-down BrowserWindow on the ready URL, single-instance lock, Quit/Retry failure dialog, graceful SIGTERM→SIGKILL shutdown, `DSH_HOME` = userData, stderr teed to `userData/server.log`; sandboxed preload bridge; esbuild build + typecheck; `pnpm --filter dsh-desktop start` runs it.
 - **Phase 1 — dev-mode desktop app** Electron shell spawning the workspace-built server
   (`pnpm dsh web --port 0` equivalent) from a checkout; window, menu, tray, lifecycle, DSH_HOME
   isolation; manual run on macOS/Windows/Linux. No packaging yet.
@@ -148,14 +151,18 @@ Electron version constraint: pick the newest stable Electron whose embedded Node
 
 - **Electron-embedded Node < 22.19**: blocks boot. Mitigated by the version-selection gate in §4.
 - **`node-pty` ABI**: rebuild against Electron headers at stage time; CI asserts the rebuild ran
+  (fail if the staging dir contains a Node-ABI builElectron 43.4.0 embeds Node 24.18.1 — verified.
+- **`--expose-internals` is mandatory in the server spawn**: without it, the cordis HMR chain fails
+  under Electron (the Node-API fallback addon does not support Electron's runtime). The desktop
+  main process must pass the flag; `smoke-boot.mjs` already asserts the boot with it.
+- **`node-pty` ABI**: rebuild against Electron headers at stage time; CI asserts the rebuild ran
   (fail if the staging dir contains a Node-ABI build).
-- **Sandbox probing per OS**: `dsh-sandbox-local` probes bwrap / macOS Seatbelt / Windows ACL and
-  fails closed. Verify tool execution on each OS in phase 1; if a platform lacks an acceptable
+- **Hardened-runtime signing**: an Apple-signed Electron enforces library validation on native
+  modules (observed with VS Code's Electron); our notarized macOS builds must sign the staged
+  native modules with the same identity (phase 3). Unsigned dev builds are unaffectedhase 1; if a platform lacks an acceptable
   sandbox, surface it in the app rather than silently changing policy.
 - **Loopback API is reachable by local processes**: identical to browser mode today. A shared-secret
   token would need a webserver/connection change in the harness — propose it upstream later if
   desired; not a v1 blocker.
-- **`pnpm deploy` from a non-workspace member** may need `server-deploy` added as a workspace
-  member (one line in `pnpm-workspace.yaml`) — fallback documented in §4; prefer avoiding it.
 - **Upstream file moves/renames** (e.g. `apps/web` → elsewhere) are handled by the usual rebase;
   the desktop app depends only on package names and the stable `dsh web` contract.
